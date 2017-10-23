@@ -10,6 +10,26 @@
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
+// counter for all proccesses pages possible
+char sharedCounter[60 * 1024]; // 
+
+char
+getSharedCounter(int index)
+{
+  return sharedCounter[index];  
+}
+
+struct spinlock tablelock;
+
+void
+cowinit(void)
+{
+  initlock(&tablelock, "sharetable");
+  int i;
+  for(i = 0; i < 60 * 1024; i++)
+    sharedCounter[i] = 0;
+}
+
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
 void
@@ -27,8 +47,8 @@ seginit(void)
   c->gdt[SEG_UCODE] = SEG(STA_X|STA_R, 0, 0xffffffff, DPL_USER);
   c->gdt[SEG_UDATA] = SEG(STA_W, 0, 0xffffffff, DPL_USER);
 
-  // Map cpu and curproc -- these are private per cpu.
-  c->gdt[SEG_KCPU] = SEG(STA_W, &c->cpu, 8, 0);
+  // Map cpu and proc -- these are private per cpu.
+  c->gdt[SEG_KCPU] = SEG(STA_W, &c->cpu, 12, 0);
 
   lgdt(c->gdt, sizeof(c->gdt));
   loadgs(SEG_KCPU << 3);
@@ -50,7 +70,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   pde = &pgdir[PDX(va)];
   if(*pde & PTE_P){
     pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
-  } else {
+  } else { // not presented
     if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
       return 0;
     // Make sure all those PTE_P bits are zero.
@@ -58,7 +78,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
     // The permissions here are overly generous, but they can
     // be further restricted by the permissions in the page table
     // entries, if necessary.
-    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+    *pde = (V2P(pgtab) | PTE_P | PTE_W | PTE_U) & ~PTE_WS;
   }
   return &pgtab[PTX(va)];
 }
@@ -147,6 +167,7 @@ setupkvm(void)
 void
 kvmalloc(void)
 {
+  cowinit();
   kpgdir = setupkvm();
   switchkvm();
 }
@@ -159,7 +180,7 @@ switchkvm(void)
   lcr3(V2P(kpgdir));   // switch to the kernel page table
 }
 
-// Switch TSS and h/w page table to correspond to process p.
+// Switch TSS (task state segment) and h/w page table to correspond to process p.
 void
 switchuvm(struct proc *p)
 {
@@ -167,7 +188,7 @@ switchuvm(struct proc *p)
   cpu->gdt[SEG_TSS] = SEG16(STS_T32A, &cpu->ts, sizeof(cpu->ts)-1, 0);
   cpu->gdt[SEG_TSS].s = 0;
   cpu->ts.ss0 = SEG_KDATA << 3;
-  cpu->ts.esp0 = (uint)proc->kstack + KSTACKSIZE;
+  cpu->ts.esp0 = (uint)thread->kstack + KSTACKSIZE;
   // setting IOPL=0 in eflags *and* iomb beyond the tss segment limit
   // forbids I/O instructions (e.g., inb and outb) from user space
   cpu->ts.iomb = (ushort) 0xFFFF;
@@ -249,6 +270,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
   return newsz;
 }
 
+
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
@@ -257,11 +279,12 @@ int
 deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
   pte_t *pte;
-  uint a, pa;
+  uint a, pa, ppn;
 
   if(newsz >= oldsz)
     return oldsz;
 
+  acquire(&tablelock);
   a = PGROUNDUP(newsz);
   for(; a  < oldsz; a += PGSIZE){
     pte = walkpgdir(pgdir, (char*)a, 0);
@@ -270,12 +293,24 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     else if((*pte & PTE_P) != 0){
       pa = PTE_ADDR(*pte);
       if(pa == 0)
+      {
+        release(&tablelock);
         panic("kfree");
-      char *v = P2V(pa);
-      kfree(v);
+      }
+
+      ppn = (pa >> PTXSHIFT) & 0xFFFFF;
+      // means it was the last page assigned to it
+      if(sharedCounter[ppn] == 0)
+      {
+        char *v = P2V(pa);
+        kfree(v);
+      }
+      else
+        sharedCounter[ppn]--;
       *pte = 0;
     }
   }
+  release(&tablelock);
   return newsz;
 }
 
@@ -288,7 +323,11 @@ freevm(pde_t *pgdir)
 
   if(pgdir == 0)
     panic("freevm: no pgdir");
+
   deallocuvm(pgdir, KERNBASE, 0);
+
+  acquire(&tablelock);
+
   for(i = 0; i < NPDENTRIES; i++){
     if(pgdir[i] & PTE_P){
       char * v = P2V(PTE_ADDR(pgdir[i]));
@@ -296,6 +335,7 @@ freevm(pde_t *pgdir)
     }
   }
   kfree((char*)pgdir);
+  release(&tablelock);
 }
 
 // Clear PTE_U on a page. Used to create an inaccessible
@@ -314,32 +354,57 @@ clearpteu(pde_t *pgdir, char *uva)
 // Given a parent process's page table, create a copy
 // of it for a child.
 pde_t*
-copyuvm(pde_t *pgdir, uint sz)
+cowcopyuvm(pde_t *pgdir, uint sz)
 {
   pde_t *d;
   pte_t *pte;
-  uint pa, i, flags;
-  char *mem;
+  uint pa, i, flags, ppn;
+  // char *mem;
 
   if((d = setupkvm()) == 0)
     return 0;
+
+  acquire(&tablelock);
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+    {
+      release(&tablelock);
       panic("copyuvm: pte should exist");
+    }
     if(!(*pte & PTE_P))
+    {
+      release(&tablelock);
       panic("copyuvm: page not present");
+    }
+
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
+    ppn = (pa >> PTXSHIFT) & 0xFFFFF;
+    
+    // save the w flag on the ws, and then sets the w flag to zero
+    flags |= ((flags & PTE_W) ? PTE_WS : 0);
+    flags &= ~PTE_W;
+    *pte &= 0xFFFFF000;
+    *pte |= flags;
+
+    char *mem;
     if((mem = kalloc()) == 0)
       goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0)
+
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
       goto bad;
+
+    sharedCounter[ppn]++;
+
+    lcr3(V2P(proc->pgdir)); // flush the TLB
   }
+
+  release(&tablelock);
   return d;
 
 bad:
   freevm(d);
+  release(&tablelock);
   return 0;
 }
 
@@ -384,10 +449,81 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+//handler in case of pagefault
+// 3.2 allocate a new page in physical memorty
+int 
+pageFault(void)
+{
+  uint pa, ppn, addr, flags;
+  pte_t *pte;
+  char *mem;
+  
+  addr = rcr2();
 
+  if(addr==0)
+  {
+    cprintf("ERROR: NULL POINTER EXEPTION!!\n");
+    proc->killed = 1;
+    exit();
+  } 
+  if((pte=walkpgdir(proc->pgdir,(void* )addr,0))==0)
+  {
+    panic("pageFault: pte should exist");
+  }
+  if(!(*pte & PTE_P))
+    panic("pageFault: page not present");
+
+  pa = PTE_ADDR(*pte);
+  ppn=( pa >> PTXSHIFT) & 0xFFFFF;
+
+  if(addr < proc->sz)
+  {
+    acquire(&tablelock);
+
+    //checking if there are still process that shared this table, if not we will add writeable on this page
+    if(sharedCounter[ppn] > 0)
+    {
+      if((mem = kalloc()) == 0) //  allocate new page in the physical mem
+        goto bad; 
+
+      memmove(mem, (char*)P2V(pa), PGSIZE);
+
+      flags = PTE_FLAGS(*pte);
+      flags |= (flags & PTE_WS) ? PTE_W : 0;
+      flags &= flags & ~PTE_WS;
+      flags &= 0x00000FFF;
+
+      *pte &= 0x0;
+      *pte |= flags;
+      *pte |= V2P(mem); // insert the new physical page num and set to writable
+
+      sharedCounter[ppn]--;   //decrease the sharing page counter
+    }
+    else if(sharedCounter[ppn]==0)
+    {
+      flags = PTE_FLAGS(*pte);
+      flags |= (flags & PTE_WS) ? PTE_W : 0;
+      flags &= flags & ~PTE_WS;
+
+      *pte &= 0xfffff000;
+      *pte |= flags;
+    }
+    else // the counter is zero, and so nobody should point to that page
+      panic("shared counter mismatched");
+
+    release(&tablelock);
+    lcr3(V2P(proc->pgdir)); // flush the TLB
+    return 1;
+  }
+  bad:
+  return 0 ;
+}
+
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.

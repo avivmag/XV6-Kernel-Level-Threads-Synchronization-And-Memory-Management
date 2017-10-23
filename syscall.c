@@ -45,7 +45,7 @@ fetchstr(uint addr, char **pp)
 int
 argint(int n, int *ip)
 {
-  return fetchint(proc->tf->esp + 4 + 4*n, ip);
+  return fetchint(thread->tf->esp + 4 + 4*n, ip);
 }
 
 // Fetch the nth word-sized system call argument as a pointer
@@ -98,6 +98,15 @@ extern int sys_unlink(void);
 extern int sys_wait(void);
 extern int sys_write(void);
 extern int sys_uptime(void);
+extern int sys_kthread_create(void);
+extern int sys_kthread_id(void);
+extern int sys_kthread_exit(void);
+extern int sys_kthread_join(void);
+extern int sys_kthread_mutex_alloc(void);
+extern int sys_kthread_mutex_dealloc(void);
+extern int sys_kthread_mutex_lock(void);
+extern int sys_kthread_mutex_unlock(void);
+extern int sys_procdump(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -121,19 +130,29 @@ static int (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_kthread_create]  sys_kthread_create,
+[SYS_kthread_id]  sys_kthread_id,
+[SYS_kthread_exit]  sys_kthread_exit,
+[SYS_kthread_join]  sys_kthread_join,
+[SYS_kthread_mutex_alloc]  sys_kthread_mutex_alloc,
+[SYS_kthread_mutex_dealloc]  sys_kthread_mutex_dealloc,
+[SYS_kthread_mutex_lock]  sys_kthread_mutex_lock,
+[SYS_kthread_mutex_unlock]  sys_kthread_mutex_unlock,
+[SYS_procdump] sys_procdump,
 };
+
 
 void
 syscall(void)
 {
   int num;
 
-  num = proc->tf->eax;
+  num = thread->tf->eax;
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
-    proc->tf->eax = syscalls[num]();
+    thread->tf->eax = syscalls[num]();
   } else {
     cprintf("%d %s: unknown sys call %d\n",
-            proc->pid, proc->name, num);
-    proc->tf->eax = -1;
+            thread->tid, proc->name, num);
+    thread->tf->eax = -1;
   }
 }

@@ -1,6 +1,9 @@
+#include "kthread.h"
+#include "spinlock.h"
+
 // Per-CPU state
 struct cpu {
-  uchar id;                    // Local APIC ID; index into cpus[] below
+  uchar apicid;                // Local APIC ID
   struct context *scheduler;   // swtch() here to enter scheduler
   struct taskstate ts;         // Used by x86 to find stack for interrupt
   struct segdesc gdt[NSEGS];   // x86 global descriptor table
@@ -11,13 +14,14 @@ struct cpu {
   // Cpu-local storage variables; see below
   struct cpu *cpu;
   struct proc *proc;           // The currently-running process.
+  struct thread *thread;
 };
 
 extern struct cpu cpus[NCPU];
 extern int ncpu;
 
 // Per-CPU variables, holding pointers to the
-// current cpu and to the current process.
+// current cpu, current process and to the current thread.
 // The asm suffix tells gcc to use "%gs:0" to refer to cpu
 // and "%gs:4" to refer to proc.  seginit sets up the
 // %gs segment register so that %gs refers to the memory
@@ -26,6 +30,7 @@ extern int ncpu;
 // in thread libraries such as Linux pthreads.
 extern struct cpu *cpu asm("%gs:0");       // &cpus[cpunum()]
 extern struct proc *proc asm("%gs:4");     // cpus[cpunum()].proc
+extern struct thread *thread asm("%gs:8");     // cpus[cpunum()].thread
 
 //PAGEBREAK: 17
 // Saved registers for kernel context switches.
@@ -46,23 +51,39 @@ struct context {
   uint eip;
 };
 
-enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+enum procstate { PUNUSED, USED, ZOMBIE };                                // state of a dying process.
+enum threadstate { TUNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, TZOMBIE, INVALID };
+enum mutexstate { M_UNUSED, M_LOCKED, M_UNLOCKED };
 
-// Per-process state
-struct proc {
-  uint sz;                     // Size of process memory (bytes)
-  pde_t* pgdir;                // Page table
-  char *kstack;                // Bottom of kernel stack for this process
-  enum procstate state;        // Process state
-  int pid;                     // Process ID
+struct thread {
+  int tid;                     // Thread ID
+  enum threadstate state;      // thread state
+  char *kstack;                // Bottom of kernel stack for this thread 
   struct proc *parent;         // Parent process
   struct trapframe *tf;        // Trap frame for current syscall
   struct context *context;     // swtch() here to run process
   void *chan;                  // If non-zero, sleeping on chan
   int killed;                  // If non-zero, have been killed
+};
+
+// Per-process state
+struct proc {
+  uint sz;                     // Size of process memory (bytes)
+  pde_t* pgdir;                // Page table
+  enum procstate state;        // Process state
+  int pid;                     // Process ID
+  struct proc *parent;         // Parent process
+  int killed;                  // If non-zero, have been killed
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct thread threads[NTHREAD]; // static thread array
+  struct spinlock lock;       // a lock that is responsible for inner threads synchronization
+};
+
+struct kthread_mutex_t {
+  int mid;
+  enum mutexstate state;
 };
 
 // Process memory is laid out contiguously, low addresses first:

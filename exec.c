@@ -2,9 +2,9 @@
 #include "param.h"
 #include "memlayout.h"
 #include "mmu.h"
+#include "x86.h"
 #include "proc.h"
 #include "defs.h"
-#include "x86.h"
 #include "elf.h"
 
 int
@@ -90,12 +90,14 @@ exec(char *path, char **argv)
       last = s+1;
   safestrcpy(proc->name, last, sizeof(proc->name));
 
+  killBrothers();
+
   // Commit to the user image.
   oldpgdir = proc->pgdir;
   proc->pgdir = pgdir;
   proc->sz = sz;
-  proc->tf->eip = elf.entry;  // main
-  proc->tf->esp = sp;
+  thread->tf->eip = elf.entry;  // main
+  thread->tf->esp = sp;
   switchuvm(proc);
   freevm(oldpgdir);
   return 0;

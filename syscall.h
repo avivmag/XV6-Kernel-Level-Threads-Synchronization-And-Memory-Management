@@ -20,3 +20,12 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+#define SYS_kthread_create  22
+#define SYS_kthread_id  23
+#define SYS_kthread_exit  24
+#define SYS_kthread_join  25
+#define SYS_kthread_mutex_alloc  26
+#define SYS_kthread_mutex_dealloc  27
+#define SYS_kthread_mutex_lock  28
+#define SYS_kthread_mutex_unlock  29
+#define SYS_procdump  30

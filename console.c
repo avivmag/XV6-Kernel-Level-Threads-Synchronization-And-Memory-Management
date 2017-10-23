@@ -110,7 +110,7 @@ panic(char *s)
 
   cli();
   cons.locking = 0;
-  cprintf("cpu%d: panic: ", cpu->id);
+  cprintf("cpu with apicid %d: panic: ", cpu->apicid);
   cprintf(s);
   cprintf("\n");
   getcallerpcs(&s, pcs);
@@ -195,7 +195,8 @@ consoleintr(int (*getc)(void))
   while((c = getc()) >= 0){
     switch(c){
     case C('P'):  // Process listing.
-      doprocdump = 1;   // procdump() locks cons.lock indirectly; invoke later
+      // procdump() locks cons.lock indirectly; invoke later
+      doprocdump = 1;
       break;
     case C('U'):  // Kill line.
       while(input.e != input.w &&
