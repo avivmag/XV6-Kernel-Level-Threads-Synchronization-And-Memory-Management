@@ -1,5 +1,4 @@
 # XV6-Kernel-Level-Threads-Synchronization-And-Memory-Management
-The famous XV6 operating system with extension to , synchronization primitives and Copy On Write (COW) optimization for the fork system call.
 
 This repository extends the famous [mit-pdos xv6 repository](https://github.com/mit-pdos/xv6-public).
 It adds three improvements to the original implementation of xv6:
@@ -14,12 +13,12 @@ A fully detailed description of the implementation can be found in the assignmen
 ## Kernel level threads And Synchronization primitives
 
 Threads are now supported, meaning multiple tasks sharing the same memory can now be ran simultaneously. Synchronization primitives are also supported as part of the improvements.
-Using them will assure a mutual exclusion (mutex) principle will be kept. Using threads and mutex are available via system calls. An fssp program can be run which tests the threads and the new primitives.
+Using them will assure a mutual exclusion (mutex) principle will be kept. Using threads and mutex are available via system calls. An [Firing squad synchronization problem (fssp)](https://en.wikipedia.org/wiki/Firing_squad_synchronization_problem) program can be run which tests the threads and the new primitives.
 
 ## Memory management
 
-Copy on write trick is a great improvement for most operating systems. basically what it does is reducing the amount of page faults by decreasing the number of pages. that is achieved by adding 'writable' flag for every physical page and maintaining a mechanism in which new pages will not be assigned when forking a process. instead of assinging new pages for a forked process, the new forked process will point to the same pages the father of it is pointing to and those shared pages 'writable' flag will be set to off (meaning they are not writable). once one of the processes decides to make some changes, a copy of the page will be assigned for that process, its flag will be set to true and the flag of the old page will be set according to the number of processes pointing to it (if bigger than one, it should not be writable).</br>
-This mechanism is highly recommended because most of times a calling to fork is made, most of the pages do not change until the process terminates. for example sections .text or .rodata never changes.
+Copy on write trick is a great improvement for most operating systems. basically what it does is reducing the amount of page faults by decreasing the number of allocated pages. that is achieved by adding 'writable' flag for every physical page allocated and maintaining a mechanism in which new pages will not be assigned when forking a process. instead of assigning new pages for a forked process, the new forked process will point to the same pages the father of it is pointing to and those shared pages 'writable' flag will be set to off (meaning they are not writable). once one of the processes decides to make some changes, a copy of the page will be assigned for that process, its flag will be set to true and the flag of the cloned page will be set according to the number of processes pointing to it (if bigger than one, it should not be writable).</br>
+This mechanism is highly recommended because, usually when calling to fork is made, most of the pages do not change until the process terminates. for example sections .text or .rodata should never change in process's lifetime.
 
 ## Getting Started
 ### Prerequisites
@@ -37,7 +36,7 @@ This mechanism is highly recommended because most of times a calling to fork is 
 
 1. open terminal and navigate to the program directory
 2. type `make qemu` and press enter, the operating system should now boot on.
-3. when shell is available, you can try the followings: fssp program with `fssp <number_of_soldiers>`, sanity test for cow with `cowtest` command, sanity test for fork with `forktest` command, many more thread tests (for better view of the available user commands use `ls` command).
+3. when shell is available, you can try the followings: fssp program with `fssp <number_of_soldiers>`, sanity test for cow with `cowtest` command, sanity test for fork with `forktest` command, many more thread tests (for better view of the available user commands, use `ls` command).
 4. enjoy :).
 
 ## Built With
